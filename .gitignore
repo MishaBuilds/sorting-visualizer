@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Production build output
+dist/
+
+# Environment files (never commit secrets)
+.env
+.env.*
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test / tooling output
+coverage/
+.vite/
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.bak
