@@ -72,6 +72,17 @@ export class SortRenderer {
   private initialCameraTarget: THREE.Vector3;
   private cameraResetActive = false;
 
+  // Scene dressing: shadow-catching ground + the light that casts shadows
+  private ground!: THREE.Mesh;
+  private mainLight!: THREE.DirectionalLight;
+
+  // Compare Mode: when set, animate() renders viewport lanes instead of
+  // the main scene (single WebGLRenderer, scissored viewports).
+  private compareRenderFn: ((gl: THREE.WebGLRenderer) => void) | null = null;
+
+  // Performance Mode: settle animations faster to shorten per-frame work
+  private performanceFast = false;
+
   // Performance settings
   private maxInstances = 100000;
 
@@ -140,6 +151,21 @@ export class SortRenderer {
     this.scene = new THREE.Scene();
     this.scene.background = COLORS.BACKGROUND;
     this.scene.fog = new THREE.Fog(COLORS.FOG, 100, 500);
+
+    // Subtle ground plane: catches shadows (adds depth) and gives the
+    // grid a visual anchor. Sized with the grid in updateCameraForElementCount.
+    const groundGeometry = new THREE.PlaneGeometry(1, 1);
+    const groundMaterial = new THREE.MeshStandardMaterial({
+      color: 0x0a0e14,
+      roughness: 0.95,
+      metalness: 0,
+    });
+    this.ground = new THREE.Mesh(groundGeometry, groundMaterial);
+    this.ground.rotation.x = -Math.PI / 2;
+    this.ground.position.y = -0.5;
+    this.ground.receiveShadow = true;
+    this.ground.frustumCulled = false;
+    this.scene.add(this.ground);
   }
 
   private initCamera(): void {
@@ -166,18 +192,22 @@ export class SortRenderer {
   }
 
   private initLights(): void {
-    // Ambient light
-    const ambientLight = new THREE.AmbientLight(COLORS.TEXT_PRIMARY, 0.4);
+    // Soft ambient base — enough to read dark faces without washing color
+    const ambientLight = new THREE.AmbientLight(COLORS.TEXT_PRIMARY, 0.5);
     this.scene.add(ambientLight);
 
-    // Main directional light
-    const mainLight = new THREE.DirectionalLight(COLORS.TEXT_PRIMARY, 1.5);
+    // Sky/ground hemisphere for gentle vertical gradient (better depth)
+    const hemiLight = new THREE.HemisphereLight(0x9db8d2, 0x1a2230, 0.35);
+    this.scene.add(hemiLight);
+
+    // Main directional light (casts the grid's shadows onto the ground)
+    const mainLight = new THREE.DirectionalLight(COLORS.TEXT_PRIMARY, 1.8);
     mainLight.position.set(20, 40, 20);
     mainLight.castShadow = true;
     mainLight.shadow.mapSize.width = 2048;
     mainLight.shadow.mapSize.height = 2048;
     mainLight.shadow.camera.near = 1;
-    mainLight.shadow.camera.far = 100;
+    mainLight.shadow.camera.far = 200;
     mainLight.shadow.camera.left = -50;
     mainLight.shadow.camera.right = 50;
     mainLight.shadow.camera.top = 50;
@@ -185,14 +215,15 @@ export class SortRenderer {
     mainLight.shadow.bias = -0.001;
     mainLight.shadow.normalBias = 0.02;
     this.scene.add(mainLight);
+    this.mainLight = mainLight;
 
     // Fill light
-    const fillLight = new THREE.DirectionalLight(COLORS.ACCENT_PRIMARY, 0.3);
+    const fillLight = new THREE.DirectionalLight(COLORS.ACCENT_PRIMARY, 0.35);
     fillLight.position.set(-20, 20, -20);
     this.scene.add(fillLight);
 
     // Rim light
-    const rimLight = new THREE.DirectionalLight(COLORS.ACCENT_SECONDARY, 0.2);
+    const rimLight = new THREE.DirectionalLight(COLORS.ACCENT_SECONDARY, 0.25);
     rimLight.position.set(0, -10, -30);
     this.scene.add(rimLight);
 
@@ -367,6 +398,23 @@ export class SortRenderer {
       this.scene.fog.far = distance * 3;
     }
 
+    // Ground follows the grid: size covers it, height sits just below the
+    // elements of the active mode (cubes are centered on y=0, bars stand
+    // on y=0), so shadows land on a visible surface at any element count.
+    const groundSize = maxDim * 2 + 40;
+    this.ground.scale.set(groundSize, groundSize, 1);
+    this.ground.position.y = this.visualizationMode === 'cubes' ? -0.52 : -0.02;
+
+    // Shadow frustum must cover the whole grid at every scale
+    const shadowExtent = Math.max(60, maxDim * 0.8);
+    const shadowCam = this.mainLight.shadow.camera;
+    shadowCam.left = -shadowExtent;
+    shadowCam.right = shadowExtent;
+    shadowCam.top = shadowExtent;
+    shadowCam.bottom = -shadowExtent;
+    shadowCam.far = Math.max(200, shadowExtent * 3);
+    shadowCam.updateProjectionMatrix();
+
     if (refit) {
       // Frame the whole grid from a pleasing angle
       this.camera.position.set(0, distance * 0.42, distance * 0.9);
@@ -402,7 +450,7 @@ export class SortRenderer {
     }
     this.applyTransforms(); // upload into the freshly created mesh
 
-    const showOverlay = mode === 'numbers';
+    const showOverlay = mode === 'numbers' && !this.compareRenderFn;
     this.overlayCanvas.style.display = showOverlay ? 'block' : 'none';
     if (showOverlay) this.resizeOverlay();
   }
@@ -415,9 +463,10 @@ export class SortRenderer {
     const normalized = this.maxValue > 0 ? data.value / this.maxValue : 0;
 
     if (this.visualizationMode === 'bars') {
-      data.targetScale.set(0.9, 0.5 + normalized * 8, 0.9);
+      // Wider dynamic range (0.4 → 10) makes height differences read at a glance
+      data.targetScale.set(0.8, 0.4 + normalized * 9.6, 0.8);
     } else if (this.visualizationMode === 'numbers') {
-      data.targetScale.set(0.9, 0.35, 0.9);
+      data.targetScale.set(0.85, 0.35, 0.85);
     } else {
       data.targetScale.set(0.95, 0.95, 0.95);
     }
@@ -496,11 +545,13 @@ export class SortRenderer {
     this.applyTransforms();
   }
 
-  private setState(instanceIndex: number, state: string): void {
+  private setState(instanceIndex: number, state: string, bump?: number): void {
     const data = this.instanceData[instanceIndex];
     if (!data) return;
     data.targetColor.copy(getColorForState(state));
     data.targetEmissive.copy(getEmissiveForState(state));
+    // Optional scale pop — strongest for the pivot, subtle for compares
+    if (bump !== undefined) data.bump = Math.max(data.bump, bump);
     data.isAnimating = true;
     data.animationProgress = 0;
     this.dirtyIndices.add(instanceIndex);
@@ -514,7 +565,7 @@ export class SortRenderer {
     switch (type) {
       case 'compare':
         for (const slot of indices) {
-          if (valid(slot)) this.setState(owner[slot], 'comparing');
+          if (valid(slot)) this.setState(owner[slot], 'comparing', 1.08);
         }
         break;
 
@@ -538,8 +589,8 @@ export class SortRenderer {
           this.refreshTargetPosition(dataA);
           this.refreshTargetPosition(dataB);
 
-          this.setState(a, 'swapping');
-          this.setState(b, 'swapping');
+          this.setState(a, 'swapping', 1.18);
+          this.setState(b, 'swapping', 1.18);
         }
         break;
       }
@@ -555,7 +606,7 @@ export class SortRenderer {
           data.value = value;
           this.applyPresentation(data);
           this.refreshTargetPosition(data);
-          this.setState(instance, 'swapping');
+          this.setState(instance, 'swapping', 1.15);
         }
         break;
       }
@@ -563,9 +614,8 @@ export class SortRenderer {
       case 'pivot':
         for (const slot of indices) {
           if (valid(slot)) {
-            const instance = owner[slot];
-            this.instanceData[instance].bump = 1.25; // pop, decays back to 1
-            this.setState(instance, 'pivot');
+            // Distinctive pop — decays back to 1 in applyTransforms
+            this.setState(owner[slot], 'pivot', 1.4);
           }
         }
         break;
@@ -623,15 +673,21 @@ export class SortRenderer {
         continue;
       }
 
-      // Pivot highlight: pop, then settle back to the value-derived scale
+      // Highlight pop: widen on X/Z only so bar heights and ground
+      // contact stay stable while the element glows.
       if (data.bump !== 1) {
-        data.bump += (1 - data.bump) * 0.1;
+        data.bump += (1 - data.bump) * (this.performanceFast ? 0.3 : 0.1);
         if (Math.abs(1 - data.bump) < 0.01) data.bump = 1;
       }
-      this.scratchA.copy(data.targetScale).multiplyScalar(data.bump);
+      this.scratchA.copy(data.targetScale);
+      if (data.bump !== 1) {
+        this.scratchA.x *= data.bump;
+        this.scratchA.z *= data.bump;
+      }
 
       if (data.isAnimating) {
-        data.animationProgress = Math.min(1, data.animationProgress + 0.15 * this.animationSpeed);
+        const step = (this.performanceFast ? 0.6 : 0.15) * this.animationSpeed;
+        data.animationProgress = Math.min(1, data.animationProgress + step);
         const t = this.easeOutCubic(data.animationProgress);
         data.position.lerp(data.targetPosition, t);
         data.scale.lerp(this.scratchA, t);
@@ -737,16 +793,16 @@ export class SortRenderer {
     );
     if (!isFinite(px) || px <= 0.5) return;
 
-    const stride = Math.max(1, Math.ceil(40 / px));
-    const fontSize = Math.max(9, Math.min(14, px * 0.45));
+    const stride = Math.max(1, Math.ceil(44 / px));
+    const fontSize = Math.max(11, Math.min(18, px * 0.5));
     const maxLabelDistanceSq = 400 * 400;
 
-    ctx.font = `600 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    ctx.font = `700 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.lineWidth = 2.5;
-    ctx.strokeStyle = 'rgba(13, 17, 23, 0.9)';
-    ctx.fillStyle = 'rgba(230, 237, 243, 0.95)';
+    ctx.lineWidth = Math.max(3, fontSize * 0.3);
+    ctx.strokeStyle = 'rgba(8, 11, 16, 0.95)';
+    ctx.fillStyle = 'rgba(241, 246, 250, 1)';
 
     this.camera.updateMatrixWorld();
     this.labelMatrix.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
@@ -800,11 +856,28 @@ export class SortRenderer {
 
     if (this.hoverDirty) {
       this.hoverDirty = false;
-      this.processHover();
+      if (!this.compareRenderFn) this.processHover();
     }
 
     if (this.dirtyIndices.size > 0) {
       this.applyTransforms();
+    }
+
+    if (this.compareRenderFn) {
+      // Compare Mode: the lanes own the screen — scissored viewports
+      // inside the single shared WebGL context (main scene is skipped).
+      const width = this.container.clientWidth;
+      const height = this.container.clientHeight;
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, width, height);
+      this.renderer.setClearColor(COLORS.BACKGROUND, 1);
+      this.renderer.clear();
+      this.compareRenderFn(this.renderer);
+      // Restore full-viewport state for normal rendering next frame
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, width, height);
+      this.onRenderCallback?.();
+      return;
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -845,6 +918,54 @@ export class SortRenderer {
   }
 
   /**
+   * Compare Mode: supply a renderer callback that draws viewport lanes
+   * (scissored) instead of the main scene; pass null to go back.
+   * Also disables orbit/hover/numbers overlay while lanes own the screen.
+   */
+  setCompareRenderFn(fn: ((gl: THREE.WebGLRenderer) => void) | null): void {
+    this.compareRenderFn = fn;
+    const active = fn !== null;
+    this.controls.enabled = !active;
+    this.overlayCanvas.style.display = active
+      ? 'none'
+      : this.visualizationMode === 'numbers' ? 'block' : 'none';
+    if (active) {
+      this.hoverDirty = false;
+      if (this.hoveredIndex !== null) {
+        this.hoveredIndex = null;
+        this.onHoverCallback?.(null, null);
+      }
+    }
+  }
+
+  /**
+   * Performance Mode: settle animations in ~2 frames instead of ~7 to
+   * shorten per-frame CPU/GPU work on very large arrays, and drop the
+   * shadow pass (it re-renders the whole scene every frame) so frame
+   * time stays flat at 25 000 – 100 000 elements.
+   */
+  setPerformanceMode(fast: boolean): void {
+    this.performanceFast = fast;
+    const shadows = !fast;
+    if (this.renderer.shadowMap.enabled !== shadows) {
+      this.renderer.shadowMap.enabled = shadows;
+      if (this.instancedMesh) {
+        this.instancedMesh.castShadow = shadows;
+        this.instancedMesh.receiveShadow = shadows;
+      }
+      this.ground.receiveShadow = shadows;
+      // materials must recompile for the changed lighting path
+      this.scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.material) {
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          mats.forEach((m) => (m.needsUpdate = true));
+        }
+      });
+    }
+  }
+
+  /**
    * Dispose of all resources
    */
   dispose(): void {
@@ -858,6 +979,8 @@ export class SortRenderer {
       this.instancedMesh.geometry.dispose();
       (this.instancedMesh.material as THREE.Material).dispose();
     }
+    this.ground.geometry.dispose();
+    (this.ground.material as THREE.Material).dispose();
     this.scene.clear();
     if (this.overlayCanvas.parentNode) {
       this.overlayCanvas.parentNode.removeChild(this.overlayCanvas);

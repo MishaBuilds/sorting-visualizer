@@ -51,6 +51,8 @@ export interface AlgorithmInfo {
   stable: boolean;
 }
 
+export type PerformanceMode = 'normal' | 'performance';
+
 export interface SortConfig {
   algorithm: AlgorithmId;
   elementCount: number;
@@ -58,6 +60,55 @@ export interface SortConfig {
   speed: number;
   dataDistribution: DataDistribution;
   soundEnabled: boolean;
+  /** NORMAL (1k–10k) vs PERFORMANCE (25k–100k) presets. */
+  performanceMode?: PerformanceMode;
+}
+
+/** Facts computed from the actual generated array (no guessing). */
+export interface DatasetStats {
+  count: number;
+  /** Fraction of adjacent pairs already in ascending order (0..1). */
+  ascendingFraction: number;
+  uniqueCount: number;
+  min: number;
+  max: number;
+}
+
+/** One completed run, kept for the in-session "Recent runs" list. */
+export interface RunHistoryEntry {
+  algorithm: AlgorithmId;
+  algorithmName: string;
+  elementCount: number;
+  elapsedMs: number;
+  comparisons: number;
+  swaps: number;
+  operations: number;
+  timestamp: number;
+}
+
+/** Real measurements of one algorithm inside a compare run. */
+export interface CompareResult {
+  algorithmId: AlgorithmId;
+  elapsedMs: number;
+  comparisons: number;
+  swaps: number;
+  operations: number;
+  arrayAccesses: number;
+}
+
+/** Winners derived exclusively from real CompareResult measurements. */
+export interface CompareVerdicts {
+  fastest: AlgorithmId;
+  fewestComparisons: AlgorithmId;
+  mostOperations: AlgorithmId;
+}
+
+/** Rectangle in CSS pixels, top-left origin (for viewport lanes and labels). */
+export interface LaneRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export interface ElementState {

@@ -32,15 +32,16 @@ export const COLORS = {
   TEXT_MUTED: new THREE.Color(0x6e7681),
 } as const;
 
-// Emissive colors for glowing effect
+// Emissive colors for glowing effect (tuned so active states "light up"
+// against the dark scene without blowing out under ACES tone mapping)
 export const EMISSIVE_COLORS = {
   DEFAULT: new THREE.Color(0x000000),
-  COMPARING: new THREE.Color(0x331a0a),
-  SWAPPING: new THREE.Color(0x332a00),
-  PIVOT: new THREE.Color(0x003315),
-  SORTED: new THREE.Color(0x002a26),
-  RANGE: new THREE.Color(0x1a1533),
-  MERGED: new THREE.Color(0x331525),
+  COMPARING: new THREE.Color(0x5c2c0a),
+  SWAPPING: new THREE.Color(0x5c4a00),
+  PIVOT: new THREE.Color(0x005a26),
+  SORTED: new THREE.Color(0x00453e),
+  RANGE: new THREE.Color(0x2a2455),
+  MERGED: new THREE.Color(0x59203a),
 } as const;
 
 // Color lerp helper

@@ -57,6 +57,9 @@ export class AnimationScheduler {
 
   setMaxOperationsPerFrame(max: number): void {
     this.config.maxOperationsPerFrame = Math.max(1, max);
+    // New throughput also becomes the per-run default: start() restores
+    // this value, so Performance Mode's higher drain rate survives restarts.
+    this.defaultMaxOperationsPerFrame = this.config.maxOperationsPerFrame;
   }
 
   start(array: number[]): void {

@@ -35,6 +35,11 @@ export class HeapSort extends SortingAlgorithm {
       if (this.isCancelled()) return;
     }
 
+    // Visual: the freshly built heap region lights up as one block; it
+    // shrinks from the right as markSorted colors the extracted tail.
+    if (n > 1) this.markRange(0, n - 1);
+    yield this.createStepResult();
+
     // Extract elements from heap one by one
     for (let i = n - 1; i > 0 && !this.isCancelled(); i--) {
       // Move current root (max) to end

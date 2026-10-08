@@ -53,6 +53,8 @@ export class QuickSort extends SortingAlgorithm {
     // Use middle element as pivot for better average performance
     const pivotIndex = Math.floor((low + high) / 2);
 
+    // Visual: show the active partition range, then the pivot on top of it
+    this.markRange(low, high);
     this.markPivot(pivotIndex);
     yield this.createStepResult();
 

@@ -17,6 +17,7 @@ const defaultConfig: SortConfig = {
   speed: 1.0,
   dataDistribution: 'random',
   soundEnabled: false,
+  performanceMode: 'normal',
 };
 
 // Wait for DOM to be ready
