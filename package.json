@@ -1,9 +1,9 @@
 {
   "name": "3d-sort-visualizer",
   "private": true,
-  "version": "2.0.0",
+  "version": "3.0.0",
   "type": "module",
-  "description": "Interactive 3D visualizer of real sorting algorithms (Bubble, Quick, Merge, Heap) with Compare Mode, live performance graph and Performance Mode for up to 100 000 elements, built with TypeScript + Three.js + Vite.",
+  "description": "Interactive 3D visualizer of real sorting algorithms (Bubble, Quick, Merge, Heap) with Compare Mode, Performance Mode up to 100 000 elements and the V3 BENCHMARK LAB — multi-run real benchmarks, leaderboards, scaling tests, dataset analysis, export and history. TypeScript + Three.js + Vite.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

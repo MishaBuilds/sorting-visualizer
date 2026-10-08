@@ -24,6 +24,15 @@ export abstract class SortingAlgorithm {
   protected config: SortConfig;
   protected context: SortingContext | null = null;
   protected cancelled = false;
+  /**
+   * Headless (benchmark) mode: the algorithm performs the exact same real
+   * comparisons / swaps / writes on the array and keeps the exact same
+   * counters, but skips visualization bookkeeping — operation objects,
+   * per-op timestamps and per-step array snapshots. This keeps the
+   * measured "algorithm time" focused on the algorithm itself instead of
+   * on rendering support work. Never active in the visualizer pipeline.
+   */
+  protected headless = false;
 
   constructor(config: SortConfig) {
     this.config = config;
@@ -34,8 +43,14 @@ export abstract class SortingAlgorithm {
 
   abstract sort(array: number[]): Generator<AlgorithmStepResult, void, unknown>;
 
-  protected createOperation(type: OperationType, indices: number[], values?: number[], metadata?: Record<string, unknown>): SortOperation {
+  /** Count an operation; in headless mode only the counter moves. */
+  protected bumpOperation(): void {
     this.statistics.operations++;
+  }
+
+  protected createOperation(type: OperationType, indices: number[], values?: number[], metadata?: Record<string, unknown>): SortOperation | null {
+    this.statistics.operations++;
+    if (this.headless) return null; // no rendering bookkeeping in benchmark runs
     const op: SortOperation = {
       type,
       indices,
@@ -50,7 +65,8 @@ export abstract class SortingAlgorithm {
   protected compare(i: number, j: number): number {
     this.statistics.comparisons++;
     this.statistics.arrayAccesses += 2;
-    this.createOperation('compare', [i, j], [this.array[i], this.array[j]]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('compare', [i, j], [this.array[i], this.array[j]]);
     return this.array[i] - this.array[j];
   }
 
@@ -59,32 +75,41 @@ export abstract class SortingAlgorithm {
     this.statistics.arrayAccesses += 4; // read i, read j, write i, write j
     const vi = this.array[i];
     const vj = this.array[j];
-    this.createOperation('swap', [i, j], [vi, vj]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('swap', [i, j], [vi, vj]);
     [this.array[i], this.array[j]] = [this.array[j], this.array[i]];
   }
 
   protected move(from: number, to: number): void {
     this.statistics.arrayAccesses += 2; // read from, write to
     const value = this.array[from];
-    this.createOperation('move', [from, to], [value]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('move', [from, to], [value]);
     this.array[to] = value;
   }
 
   protected overwrite(index: number, value: number): void {
     this.statistics.arrayAccesses += 1; // write
-    this.createOperation('overwrite', [index], [value]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('overwrite', [index], [value]);
     this.array[index] = value;
   }
 
   protected markPivot(index: number): void {
-    this.createOperation('pivot', [index], [this.array[index]]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('pivot', [index], [this.array[index]]);
   }
 
   protected markHeapify(index: number): void {
-    this.createOperation('heapify', [index], [this.array[index]]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('heapify', [index], [this.array[index]]);
   }
 
   protected markMerge(leftStart: number, leftEnd: number, rightStart: number, rightEnd: number): void {
+    if (this.headless) {
+      this.bumpOperation();
+      return;
+    }
     const leftValues = this.array.slice(leftStart, leftEnd + 1);
     const rightValues = this.array.slice(rightStart, rightEnd + 1);
     this.createOperation('merge', [leftStart, leftEnd, rightStart, rightEnd], [...leftValues, ...rightValues], {
@@ -94,15 +119,31 @@ export abstract class SortingAlgorithm {
   }
 
   protected markSorted(index: number): void {
-    this.createOperation('mark-sorted', [index], [this.array[index]]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('mark-sorted', [index], [this.array[index]]);
   }
 
   protected markRange(start: number, end: number): void {
-    this.createOperation('mark-range', [start, end]);
+    if (this.headless) this.bumpOperation();
+    else this.createOperation('mark-range', [start, end]);
   }
 
   protected getArray(): number[] {
     return this.array;
+  }
+
+  /** Switch the algorithm into headless (benchmark) mode. See field docs. */
+  setHeadless(enabled: boolean): void {
+    this.headless = enabled;
+  }
+
+  /**
+   * The final (sorted) internal array — used by the benchmark engine's
+   * correctness check. Returns a copy so callers can never mutate the
+   * algorithm's own state.
+   */
+  getFinalArray(): number[] {
+    return [...this.array];
   }
 
   /**

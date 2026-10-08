@@ -841,6 +841,10 @@ export class SortRenderer {
   private animate = (_time: number): void => {
     this.animationFrameId = requestAnimationFrame(this.animate);
 
+    // Benchmark Lab view: keep the loop alive (cheap re-registration) but
+    // skip ALL GPU/scene work so the 3D scene never competes with the lab.
+    if (this.suspended) return;
+
     this.controls.update();
 
     if (this.cameraResetActive) {
@@ -963,6 +967,17 @@ export class SortRenderer {
         }
       });
     }
+  }
+
+  /**
+   * Benchmark Lab view: suspend all rendering work (single flag, no extra
+   * WebGL context, no leaked state). The rAF chain stays alive but returns
+   * immediately; resuming restores the exact previous scene.
+   */
+  private suspended = false;
+
+  setSuspended(suspended: boolean): void {
+    this.suspended = suspended;
   }
 
   /**

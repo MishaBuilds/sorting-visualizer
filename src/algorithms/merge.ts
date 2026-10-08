@@ -132,7 +132,8 @@ export class MergeSort extends SortingAlgorithm {
     const ops = this.operations.splice(0);
     return {
       operations: ops,
-      array: [...this.array],
+      // Headless mode never copies: benchmark runs ignore the snapshot.
+      array: this.headless ? this.array : [...this.array],
       isComplete,
     };
   }

@@ -37,6 +37,7 @@ import {
 } from '../utils/perfMode';
 import { validateSelection, computeLaneLayout, type LaneLayout } from '../utils/compare';
 import { createRunHistory, type KeyValueStore } from '../utils/runHistory';
+import { BenchmarkLab, type VisualizeWinnerPayload } from './BenchmarkLab';
 
 const ALGORITHM_NAMES: Record<AlgorithmId, string> = {
   bubble: 'Bubble Sort',
@@ -80,6 +81,7 @@ export class UIManager {
   private resultOverlay: ResultOverlay;
   private historyPanel: HistoryPanel;
   private compareOverlay: CompareOverlay;
+  private benchmarkLab: BenchmarkLab;
 
   private config: SortConfig;
   private state: AppState = 'idle';
@@ -94,6 +96,9 @@ export class UIManager {
   private compareController: CompareController | null = null;
   private compareLanes = new Map<AlgorithmId, CompareLane>();
   private laneLayout: LaneLayout | null = null;
+
+  // V3 view state: 'benchmark' suspends the 3D renderer entirely
+  private currentView: 'visualizer' | 'benchmark' = 'visualizer';
 
   // Callbacks for external control
   private onStateChangeCallback: ((state: AppState) => void) | null = null;
@@ -138,6 +143,14 @@ export class UIManager {
     this.resultOverlay = new ResultOverlay(resultRoot);
     this.compareOverlay = new CompareOverlay(compareRoot);
 
+    // V3: Benchmark Lab — a fully separate view with its own DOM subtree;
+    // the WebGL renderer is suspended while it is active.
+    const labRoot = this.rootContainer.querySelector('#benchmark-root') as HTMLElement;
+    this.benchmarkLab = new BenchmarkLab(labRoot, this.config, {
+      onBack: () => this.switchView('visualizer'),
+      onVisualizeWinner: (payload) => this.visualizeWinner(payload),
+    });
+
     // Wire everything together
     this.bindCallbacks();
     this.connectSchedulerToRenderer();
@@ -158,6 +171,10 @@ export class UIManager {
             <h1>SORTING VISUALIZER</h1>
             <p class="header-subtitle">Real-time algorithm visualization</p>
           </div>
+          <nav class="view-tabs" aria-label="Mode">
+            <button type="button" class="view-tab active" id="tab-visualizer">VISUALIZER</button>
+            <button type="button" class="view-tab" id="tab-benchmark">BENCHMARK LAB</button>
+          </nav>
           <div class="header-info">
             <span id="element-count-display">10 000 elements</span>
             <span id="algorithm-display">Quick Sort</span>
@@ -189,6 +206,7 @@ export class UIManager {
             <div id="history-panel" class="side-panel"></div>
           </div>
         </div>
+        <div id="benchmark-root" class="benchmark-root"></div>
       </div>
     `;
   }
@@ -236,6 +254,14 @@ export class UIManager {
         hoverInfo.style.display = 'none';
       }
     });
+
+    // View switch: visualizer ↔ benchmark lab
+    this.rootContainer
+      .querySelector('#tab-visualizer')
+      ?.addEventListener('click', () => this.switchView('visualizer'));
+    this.rootContainer
+      .querySelector('#tab-benchmark')
+      ?.addEventListener('click', () => this.switchView('benchmark'));
   }
 
   private connectSchedulerToRenderer(): void {
@@ -439,6 +465,98 @@ export class UIManager {
     this.renderer.resetCamera();
   }
 
+  /**
+   * Switch between the 3D visualizer and the Benchmark Lab.
+   *
+   * Entering the lab stops any active sort/compare and suspends the WebGL
+   * render loop (no extra contexts, no competing frames). Leaving the lab
+   * aborts in-flight benchmark work so the visualizer never shares the CPU
+   * with background runs.
+   */
+  switchView(view: 'visualizer' | 'benchmark'): void {
+    if (view === this.currentView) return;
+    const appContainer = this.rootContainer.querySelector('.app-container');
+
+    if (view === 'benchmark') {
+      if (this.state === 'sorting' || this.state === 'paused') this.handleReset();
+      if (this.compareActive) this.stopCompare();
+      this.renderer.setSuspended(true);
+      appContainer?.classList.add('view-benchmark');
+    } else {
+      this.benchmarkLab.cancelActive();
+      appContainer?.classList.remove('view-benchmark');
+      this.renderer.setSuspended(false);
+    }
+
+    this.currentView = view;
+    this.rootContainer
+      .querySelector('#tab-visualizer')
+      ?.classList.toggle('active', view === 'visualizer');
+    this.rootContainer
+      .querySelector('#tab-benchmark')
+      ?.classList.toggle('active', view === 'benchmark');
+  }
+
+  getView(): 'visualizer' | 'benchmark' {
+    return this.currentView;
+  }
+
+  /**
+   * VISUALIZE WINNER — load the benchmark's exact source array + winning
+   * algorithm into the normal 3D pipeline and start the sort, so the user
+   * can watch the measurement they just read about.
+   */
+  private visualizeWinner(payload: VisualizeWinnerPayload): void {
+    if (this.state === 'sorting' || this.state === 'paused') {
+      this.scheduler.stop();
+      this.operationStream.stop();
+    }
+    if (this.compareActive) this.stopCompare();
+
+    this.switchView('visualizer');
+
+    const effectiveMode = modeForCount(payload.array.length);
+    this.config = {
+      ...this.config,
+      algorithm: payload.algorithmId,
+      elementCount: payload.array.length,
+      dataDistribution: payload.dataset,
+      performanceMode: effectiveMode,
+    };
+
+    // Sync every consumer of the config (panel selects, stream, scheduler, renderer)
+    this.controlPanel.setConfig({
+      algorithm: payload.algorithmId,
+      elementCount: payload.array.length,
+      dataDistribution: payload.dataset,
+      performanceMode: effectiveMode,
+    });
+    this.operationStream.setConfig(this.config);
+    this.scheduler.setSpeed(this.config.speed);
+    this.scheduler.setMaxOperationsPerFrame(schedulerOpsPerFrame(effectiveMode));
+    this.renderer.setPerformanceMode(effectiveMode === 'performance');
+    this.renderer.setElementCount(payload.array.length);
+
+    // Load the exact benchmark source array (not a regenerated one)
+    this.currentArray = payload.array.slice();
+    this.setState('generating');
+    this.renderer.reset();
+    this.renderer.updateArray(this.currentArray);
+    this.statisticsPanel.reset();
+    this.operationPanel.reset();
+    this.graph.reset();
+    this.resultOverlay.hide();
+    this.controlPanel.setDatasetStats(
+      computeDatasetStats(this.currentArray),
+      DISTRIBUTION_NAMES[payload.dataset] || payload.dataset
+    );
+    this.setState('idle');
+    this.updateHeaderDisplays();
+
+    // Watch the winner actually work
+    this.startSorting();
+  }
+
   private markAllSorted(): void {
     const indices = Array.from({ length: this.currentArray.length }, (_, i) => i);
     this.renderer.markSorted(indices);
@@ -617,6 +735,7 @@ export class UIManager {
     for (const lane of this.compareLanes.values()) lane.dispose();
     this.compareLanes.clear();
     this.graph.dispose();
+    this.benchmarkLab.dispose();
     this.renderer.dispose();
   }
 }
